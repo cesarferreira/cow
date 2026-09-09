@@ -9,6 +9,7 @@ use crate::CowError;
 
 pub(crate) struct DestinationGuard {
     destination: PathBuf,
+    private_root: PathBuf,
     private: PathBuf,
     armed: bool,
 }
@@ -17,13 +18,34 @@ impl DestinationGuard {
     pub(crate) fn new(destination: &Path) -> Result<Self, CowError> {
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
         for _ in 0..32 {
-            let private = parent.join(format!(".cow-tmp-{:016x}", rand::random::<u64>()));
-            if fs::symlink_metadata(&private).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
-                return Ok(Self {
-                    destination: destination.to_path_buf(),
-                    private,
-                    armed: true,
-                });
+            let private_root = parent.join(format!(".cow-tmp-{:016x}", rand::random::<u64>()));
+            match fs::create_dir(&private_root) {
+                Ok(()) => {
+                    let guard = Self {
+                        destination: destination.to_path_buf(),
+                        private: private_root.join("tree"),
+                        private_root,
+                        armed: true,
+                    };
+                    fs::set_permissions(
+                        &guard.private_root,
+                        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+                    )
+                    .map_err(|source| CowError::Io {
+                        operation: "securing private destination",
+                        path: guard.private_root.clone(),
+                        source,
+                    })?;
+                    return Ok(guard);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => {
+                    return Err(CowError::Io {
+                        operation: "creating private destination",
+                        path: private_root,
+                        source,
+                    });
+                }
             }
         }
         Err(CowError::Io {
@@ -39,8 +61,6 @@ impl DestinationGuard {
 
     pub(crate) fn reset(&mut self) -> Result<(), CowError> {
         remove_private(&self.private)?;
-        let replacement = Self::new(&self.destination)?;
-        self.private = replacement.private.clone();
         Ok(())
     }
 
@@ -58,6 +78,7 @@ impl DestinationGuard {
                 }
             }
         })?;
+        let _ = fs::remove_dir(&self.private_root);
         self.armed = false;
         Ok(())
     }
@@ -66,7 +87,7 @@ impl DestinationGuard {
 impl Drop for DestinationGuard {
     fn drop(&mut self) {
         if self.armed {
-            let _ = remove_private(&self.private);
+            let _ = remove_private(&self.private_root);
         }
     }
 }
@@ -160,6 +181,23 @@ mod tests {
         }
         assert!(!private.exists());
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn guard_owns_a_private_parent_before_cloning() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("clone");
+        let guard = DestinationGuard::new(&destination).unwrap();
+        let private_parent = guard.path().parent().unwrap();
+        assert!(private_parent.is_dir());
+        assert!(
+            private_parent
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".cow-tmp-")
+        );
+        assert!(!guard.path().exists());
     }
 
     #[test]

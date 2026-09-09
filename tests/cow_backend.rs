@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::net::UnixListener;
 
 use cow::{CloneOptions, CloneStrategy, CowError, clone_dir};
 
@@ -30,8 +31,30 @@ fn automatic_strategy_always_produces_an_independent_clone() {
     fs::write(source.join("nested/data"), "original").unwrap();
 
     let result = clone_dir(&source, &destination, CloneOptions::default()).unwrap();
-    assert_eq!(fs::read_to_string(destination.join("nested/data")).unwrap(), "original");
-    fs::write(&source.join("nested/data"), "changed").unwrap();
-    assert_eq!(fs::read_to_string(destination.join("nested/data")).unwrap(), "original");
-    assert!(matches!(result.strategy, CloneStrategy::ApfsClone | CloneStrategy::Reflink | CloneStrategy::Copy));
+    assert_eq!(
+        fs::read_to_string(destination.join("nested/data")).unwrap(),
+        "original"
+    );
+    fs::write(source.join("nested/data"), "changed").unwrap();
+    assert_eq!(
+        fs::read_to_string(destination.join("nested/data")).unwrap(),
+        "original"
+    );
+    assert!(matches!(
+        result.strategy,
+        CloneStrategy::ApfsClone | CloneStrategy::Reflink | CloneStrategy::Copy
+    ));
+}
+
+#[test]
+fn native_clone_rejects_special_files() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    let _socket = UnixListener::bind(source.join("socket")).unwrap();
+
+    let error = clone_dir(&source, &destination, CloneOptions::require_cow()).unwrap_err();
+    assert!(matches!(error, CowError::UnsupportedFileType { .. }));
+    assert!(!destination.exists());
 }

@@ -18,7 +18,8 @@ pub(super) fn clone_cow(
 }
 
 fn reflink_file(source: &Path, destination: &Path) -> Result<(), BackendError> {
-    let input = File::open(source).map_err(|error| io_error("opening source file", source, error))?;
+    let input =
+        File::open(source).map_err(|error| io_error("opening source file", source, error))?;
     let output = OpenOptions::new()
         .write(true)
         .create_new(true)

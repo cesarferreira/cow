@@ -1,9 +1,14 @@
-use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 static CANCELLED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 fn flag() -> Arc<AtomicBool> {
-    CANCELLED.get_or_init(|| Arc::new(AtomicBool::new(false))).clone()
+    CANCELLED
+        .get_or_init(|| Arc::new(AtomicBool::new(false)))
+        .clone()
 }
 
 pub(crate) fn requested() -> bool {

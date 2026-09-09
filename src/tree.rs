@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{FileTypeExt, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::Path,
 };
 
@@ -34,6 +34,7 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<TreeStats, 
     })
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn measure_tree(source: &Path) -> Result<TreeStats, BackendError> {
     let metadata = fs::symlink_metadata(source)
         .map_err(|error| io_error("reading entry metadata", source, error))?;
@@ -45,11 +46,17 @@ pub(crate) fn measure_tree(source: &Path) -> Result<TreeStats, BackendError> {
         for entry in
             fs::read_dir(source).map_err(|error| io_error("reading directory", source, error))?
         {
-            let entry = entry.map_err(|error| io_error("reading directory entry", source, error))?;
+            let entry =
+                entry.map_err(|error| io_error("reading directory entry", source, error))?;
             let child = measure_tree(&entry.path())?;
             stats.files += child.files;
             stats.logical_bytes += child.logical_bytes;
         }
+    } else if !metadata.file_type().is_symlink() {
+        return Err(CowError::UnsupportedFileType {
+            path: source.to_path_buf(),
+        }
+        .into());
     }
     Ok(stats)
 }
@@ -89,7 +96,8 @@ where
         for entry in
             fs::read_dir(source).map_err(|error| io_error("reading directory", source, error))?
         {
-            let entry = entry.map_err(|error| io_error("reading directory entry", source, error))?;
+            let entry =
+                entry.map_err(|error| io_error("reading directory entry", source, error))?;
             clone_entry(
                 &entry.path(),
                 &destination.join(entry.file_name()),
@@ -104,23 +112,14 @@ where
         stats.files += 1;
         stats.logical_bytes += metadata.len();
     } else if file_type.is_symlink() {
-        let target = fs::read_link(source)
-            .map_err(|error| io_error("reading symlink", source, error))?;
+        let target =
+            fs::read_link(source).map_err(|error| io_error("reading symlink", source, error))?;
         std::os::unix::fs::symlink(&target, destination)
             .map_err(|error| io_error("creating symlink", destination, error))?;
         let accessed = FileTime::from_last_access_time(&metadata);
         let modified = FileTime::from_last_modification_time(&metadata);
         set_symlink_file_times(destination, accessed, modified)
             .map_err(|error| io_error("restoring symlink timestamps", destination, error))?;
-    } else if file_type.is_socket()
-        || file_type.is_fifo()
-        || file_type.is_block_device()
-        || file_type.is_char_device()
-    {
-        return Err(CowError::UnsupportedFileType {
-            path: source.to_path_buf(),
-        }
-        .into());
     } else {
         return Err(CowError::UnsupportedFileType {
             path: source.to_path_buf(),
@@ -131,7 +130,8 @@ where
 }
 
 fn copy_file(source: &Path, destination: &Path) -> Result<(), BackendError> {
-    let mut input = File::open(source).map_err(|error| io_error("opening source file", source, error))?;
+    let mut input =
+        File::open(source).map_err(|error| io_error("opening source file", source, error))?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -156,8 +156,11 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), BackendError> {
 }
 
 fn restore_metadata(path: &Path, metadata: &fs::Metadata) -> Result<(), BackendError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(metadata.permissions().mode()))
-        .map_err(|error| io_error("restoring permissions", path, error))?;
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(metadata.permissions().mode()),
+    )
+    .map_err(|error| io_error("restoring permissions", path, error))?;
     let accessed = FileTime::from_last_access_time(metadata);
     let modified = FileTime::from_last_modification_time(metadata);
     set_file_times(path, accessed, modified)

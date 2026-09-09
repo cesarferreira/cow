@@ -29,6 +29,9 @@ fn supported_capability_names_a_native_strategy() {
     let directory = tempfile::tempdir().unwrap();
     let info = inspect(directory.path()).unwrap();
     if info.cow_supported == CowCapability::Supported {
-        assert!(matches!(info.preferred_strategy, CloneStrategy::ApfsClone | CloneStrategy::Reflink));
+        assert!(matches!(
+            info.preferred_strategy,
+            CloneStrategy::ApfsClone | CloneStrategy::Reflink
+        ));
     }
 }

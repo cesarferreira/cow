@@ -28,18 +28,45 @@ fn physical_copy_preserves_the_complete_tree() {
     let result = clone_dir(&source, &destination, CloneOptions::copy()).unwrap();
 
     assert_eq!(result.strategy, CloneStrategy::Copy);
-    assert_eq!(result.logical_bytes, 5 + 6 + 21 + 3 + 0 + 10);
+    assert_eq!(result.logical_bytes, 45);
     assert_eq!(result.files, 6);
-    assert_eq!(fs::read_to_string(destination.join("nested/data.txt")).unwrap(), "hello");
-    assert_eq!(fs::read_link(destination.join("current")).unwrap(), std::path::Path::new("nested/data.txt"));
-    assert_eq!(fs::read_link(destination.join("broken")).unwrap(), std::path::Path::new("missing"));
-    assert_eq!(fs::metadata(destination.join("run.sh")).unwrap().permissions().mode() & 0o777, 0o751);
-    assert_eq!(FileTime::from_last_modification_time(&fs::metadata(destination.join("nested/data.txt")).unwrap()), timestamp);
+    assert_eq!(
+        fs::read_to_string(destination.join("nested/data.txt")).unwrap(),
+        "hello"
+    );
+    assert_eq!(
+        fs::read_link(destination.join("current")).unwrap(),
+        std::path::Path::new("nested/data.txt")
+    );
+    assert_eq!(
+        fs::read_link(destination.join("broken")).unwrap(),
+        std::path::Path::new("missing")
+    );
+    assert_eq!(
+        fs::metadata(destination.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o751
+    );
+    assert_eq!(
+        FileTime::from_last_modification_time(
+            &fs::metadata(destination.join("nested/data.txt")).unwrap()
+        ),
+        timestamp
+    );
 
     fs::write(destination.join("nested/data.txt"), "destination").unwrap();
-    assert_eq!(fs::read_to_string(source.join("nested/data.txt")).unwrap(), "hello");
+    assert_eq!(
+        fs::read_to_string(source.join("nested/data.txt")).unwrap(),
+        "hello"
+    );
     fs::write(source.join(".hidden"), "source").unwrap();
-    assert_eq!(fs::read_to_string(destination.join(".hidden")).unwrap(), "secret");
+    assert_eq!(
+        fs::read_to_string(destination.join(".hidden")).unwrap(),
+        "secret"
+    );
 }
 
 #[test]
@@ -55,7 +82,11 @@ fn failure_removes_the_private_destination() {
     assert!(matches!(error, CowError::UnsupportedFileType { .. }));
     assert!(!destination.exists());
     assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
-        !entry.unwrap().file_name().to_string_lossy().starts_with(".cow-tmp-")
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".cow-tmp-")
     }));
     assert!(source.exists());
 }

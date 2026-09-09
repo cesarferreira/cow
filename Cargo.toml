@@ -13,7 +13,6 @@ name = "cow"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 filetime = "0.2"
 libc = "0.2"

@@ -5,7 +5,10 @@ mod macos;
 
 use std::path::Path;
 
-use crate::{CloneStrategy, tree::{BackendError, TreeStats}};
+use crate::{
+    CloneStrategy,
+    tree::{BackendError, TreeStats},
+};
 
 pub(crate) fn clone_cow(
     source: &Path,

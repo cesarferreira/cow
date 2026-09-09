@@ -13,7 +13,14 @@ fn clone_json_is_machine_readable() {
 
     let output = Command::cargo_bin("cow")
         .unwrap()
-        .args(["clone", source.to_str().unwrap(), destination.to_str().unwrap(), "--strategy", "copy", "--json"])
+        .args([
+            "clone",
+            source.to_str().unwrap(),
+            destination.to_str().unwrap(),
+            "--strategy",
+            "copy",
+            "--json",
+        ])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -50,7 +57,13 @@ fn human_clone_output_names_the_strategy() {
     fs::write(source.join("data"), "hello").unwrap();
     Command::cargo_bin("cow")
         .unwrap()
-        .args(["clone", source.to_str().unwrap(), destination.to_str().unwrap(), "--strategy", "copy"])
+        .args([
+            "clone",
+            source.to_str().unwrap(),
+            destination.to_str().unwrap(),
+            "--strategy",
+            "copy",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Copied"))
@@ -66,7 +79,12 @@ fn json_errors_are_structured_on_stderr() {
     fs::create_dir(&destination).unwrap();
     let output = Command::cargo_bin("cow")
         .unwrap()
-        .args(["clone", source.to_str().unwrap(), destination.to_str().unwrap(), "--json"])
+        .args([
+            "clone",
+            source.to_str().unwrap(),
+            destination.to_str().unwrap(),
+            "--json",
+        ])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
@@ -79,7 +97,14 @@ fn json_errors_are_structured_on_stderr() {
 fn require_cow_conflicts_with_copy_strategy() {
     Command::cargo_bin("cow")
         .unwrap()
-        .args(["clone", "source", "destination", "--require-cow", "--strategy", "copy"])
+        .args([
+            "clone",
+            "source",
+            "destination",
+            "--require-cow",
+            "--strategy",
+            "copy",
+        ])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("cannot be used"));

@@ -6,10 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    CloneStrategy, CowCapability, CowError, FilesystemInfo, platform,
-    tree::BackendError,
-};
+use crate::{CloneStrategy, CowCapability, CowError, FilesystemInfo, platform, tree::BackendError};
 
 pub(crate) fn inspect(path: &Path) -> Result<FilesystemInfo, CowError> {
     let canonical = fs::canonicalize(path).map_err(|error| {
@@ -71,7 +68,11 @@ fn probe_capability(directory: &Path) -> CowCapability {
         let suffix = rand::random::<u64>();
         let source = directory.join(format!(".cow-probe-source-{suffix:016x}"));
         let destination = directory.join(format!(".cow-probe-destination-{suffix:016x}"));
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&source) {
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&source)
+        {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return CowCapability::Unknown,
