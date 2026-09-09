@@ -1,4 +1,5 @@
 mod error;
+mod inspect;
 mod platform;
 mod transaction;
 mod tree;
@@ -11,6 +12,10 @@ pub use error::CowError;
 pub use types::{
     CloneOptions, CloneResult, CloneStrategy, CowCapability, FilesystemInfo, StrategyPreference,
 };
+
+pub fn inspect(path: impl AsRef<Path>) -> Result<FilesystemInfo, CowError> {
+    inspect::inspect(path.as_ref())
+}
 
 pub fn clone_dir(
     source: impl AsRef<Path>,
