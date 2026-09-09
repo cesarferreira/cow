@@ -18,6 +18,9 @@ pub(super) fn clone_cow(
     let result = unsafe { libc::clonefile(source_c.as_ptr(), destination_c.as_ptr(), CLONE_NOFOLLOW) };
     if result != 0 {
         let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted && crate::cancellation::requested() {
+            return Err(crate::CowError::Cancelled.into());
+        }
         return match error.raw_os_error() {
             Some(libc::ENOTSUP | libc::EXDEV) => Err(BackendError::Unsupported),
             _ => Err(io_error("cloning directory with clonefile", destination, error)),

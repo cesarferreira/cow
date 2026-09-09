@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use cow::{
     CloneOptions, CloneResult, CloneStrategy, CowCapability, CowError, FilesystemInfo,
     StrategyPreference, clone_dir, inspect,
+    install_interrupt_handler,
 };
 use serde::Serialize;
 
@@ -117,6 +118,10 @@ struct ErrorOutput<'a> {
 }
 
 fn main() -> ExitCode {
+    if let Err(error) = install_interrupt_handler() {
+        eprintln!("Error: {error}");
+        return ExitCode::FAILURE;
+    }
     run(Cli::parse())
 }
 

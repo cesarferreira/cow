@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Read, Write},
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::Path,
 };
@@ -76,6 +76,9 @@ fn clone_entry<F>(
 where
     F: FnMut(&Path, &Path) -> Result<(), BackendError>,
 {
+    if crate::cancellation::requested() {
+        return Err(CowError::Cancelled.into());
+    }
     let metadata = fs::symlink_metadata(source)
         .map_err(|error| io_error("reading entry metadata", source, error))?;
     let file_type = metadata.file_type();
@@ -134,8 +137,21 @@ fn copy_file(source: &Path, destination: &Path) -> Result<(), BackendError> {
         .create_new(true)
         .open(destination)
         .map_err(|error| io_error("creating destination file", destination, error))?;
-    io::copy(&mut input, &mut output)
-        .map_err(|error| io_error("copying file contents", destination, error))?;
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        if crate::cancellation::requested() {
+            return Err(CowError::Cancelled.into());
+        }
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| io_error("reading source file", source, error))?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| io_error("writing destination file", destination, error))?;
+    }
     Ok(())
 }
 
@@ -156,4 +172,26 @@ pub(crate) fn io_error(operation: &'static str, path: &Path, source: io::Error) 
         source,
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::{CowError, cancellation};
+
+    use super::copy_tree;
+
+    #[test]
+    fn copy_stops_when_cancellation_is_requested() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("data"), "content").unwrap();
+        cancellation::request_for_test();
+        let result = copy_tree(&source, &destination);
+        cancellation::reset_for_test();
+        assert!(matches!(result, Err(CowError::Cancelled)));
+    }
 }

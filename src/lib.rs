@@ -1,3 +1,4 @@
+mod cancellation;
 mod error;
 mod inspect;
 mod platform;
@@ -12,6 +13,15 @@ pub use error::CowError;
 pub use types::{
     CloneOptions, CloneResult, CloneStrategy, CowCapability, FilesystemInfo, StrategyPreference,
 };
+
+#[doc(hidden)]
+pub fn install_interrupt_handler() -> Result<(), CowError> {
+    cancellation::install().map_err(|source| CowError::Io {
+        operation: "installing interrupt handler",
+        path: std::path::PathBuf::new(),
+        source,
+    })
+}
 
 pub fn inspect(path: impl AsRef<Path>) -> Result<FilesystemInfo, CowError> {
     inspect::inspect(path.as_ref())
