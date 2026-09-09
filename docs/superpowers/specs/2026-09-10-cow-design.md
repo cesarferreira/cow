@@ -117,10 +117,23 @@ Tests follow red-green-refactor and are divided into:
 
 Verification runs formatting, Clippy with warnings denied, the full test suite, and a release build. The generated CI remains the base and is adjusted only where needed to exercise both macOS and Linux.
 
+## README Performance Comparison
+
+The finished README includes a compact comparison of `cow`, a regular recursive copy, and Git worktree creation. The comparison reports:
+
+- Wall-clock creation time.
+- Apparent/logical size of the resulting tree.
+- Incremental physical disk usage where the platform exposes a reliable measurement.
+- Whether ignored files, untracked files, build outputs, dependencies, and an independent `.git` directory are present.
+
+The table must distinguish the products' semantics: a Git worktree is another checkout and is not a complete copy of the current filesystem state, while `cow` and a recursive copy reproduce that state. Measurements use the same source fixture and destination filesystem, include the exact commands, platform, filesystem, tool versions, source characteristics, run count, and aggregation method. Cache state is disclosed rather than hidden.
+
+Only measurements reproduced during implementation are published. If physical allocation cannot be measured reliably on the current host, that cell is marked unavailable instead of estimated. The README does not generalize one machine's result into an unsupported universal speed claim.
+
 ## Scope Boundaries
 
-The MVP does not add force deletion, exclusions, progress bars, individual-file cloning, lifecycle tracking, Git behavior, remote cloning, Windows support, shell completions, benchmarking commands, or `doctor`. No state is written under the user's home directory or inside cloned trees.
+The MVP does not add force deletion, exclusions, progress bars, individual-file cloning, lifecycle tracking, Git behavior, remote cloning, Windows support, shell completions, a user-facing benchmarking command, or `doctor`. No state is written under the user's home directory or inside cloned trees.
 
 ## Acceptance Criteria
 
-The MVP is accepted when the public Rust API and both CLI commands work on macOS and Linux; native CoW is selected and truthfully reported when supported; auto mode safely falls back; required-CoW mode fails rather than copying; complete supported directory trees remain equivalent and independent; existing destinations are never overwritten; failed operations do not expose partial destinations; and all declared verification commands pass.
+The MVP is accepted when the public Rust API and both CLI commands work on macOS and Linux; native CoW is selected and truthfully reported when supported; auto mode safely falls back; required-CoW mode fails rather than copying; complete supported directory trees remain equivalent and independent; existing destinations are never overwritten; failed operations do not expose partial destinations; the README contains the reproducible performance and semantic comparison; and all declared verification commands pass.
