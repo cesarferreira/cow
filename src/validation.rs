@@ -17,11 +17,7 @@ pub(crate) fn validate_paths(
                 path: source.to_path_buf(),
             }
         } else {
-            CowError::Io {
-                operation: "reading source metadata",
-                path: source.to_path_buf(),
-                source: error,
-            }
+            CowError::from_io("reading source metadata", source, error)
         }
     })?;
     if !source_metadata.file_type().is_dir() {
@@ -36,21 +32,16 @@ pub(crate) fn validate_paths(
         });
     }
 
-    let source = std::fs::canonicalize(source).map_err(|source_error| CowError::Io {
-        operation: "canonicalizing source",
-        path: source.to_path_buf(),
-        source: source_error,
-    })?;
+    let source = std::fs::canonicalize(source)
+        .map_err(|source_error| CowError::from_io("canonicalizing source", source, source_error))?;
     let file_name = destination
         .file_name()
         .ok_or_else(|| CowError::DestinationExists {
             path: destination.to_path_buf(),
         })?;
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    let parent = std::fs::canonicalize(parent).map_err(|source_error| CowError::Io {
-        operation: "canonicalizing destination parent",
-        path: parent.to_path_buf(),
-        source: source_error,
+    let parent = std::fs::canonicalize(parent).map_err(|source_error| {
+        CowError::from_io("canonicalizing destination parent", parent, source_error)
     })?;
     let destination = parent.join(file_name);
 

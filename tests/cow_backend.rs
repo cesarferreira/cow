@@ -18,7 +18,10 @@ fn required_cow_never_silently_copies() {
             fs::write(destination.join("data"), "changed").unwrap();
             assert_eq!(fs::read_to_string(source.join("data")).unwrap(), "original");
         }
-        Err(error) => assert!(matches!(error, CowError::CowUnsupported { .. })),
+        Err(error) => {
+            eprintln!("skipped native CoW verification: {error}");
+            assert!(matches!(error, CowError::CowUnsupported { .. }));
+        }
     }
 }
 
@@ -57,4 +60,18 @@ fn native_clone_rejects_special_files() {
     let error = clone_dir(&source, &destination, CloneOptions::require_cow()).unwrap_err();
     assert!(matches!(error, CowError::UnsupportedFileType { .. }));
     assert!(!destination.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn empty_tree_reports_reflink_only_after_a_real_probe() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("destination");
+    fs::create_dir(&source).unwrap();
+
+    match clone_dir(&source, &destination, CloneOptions::require_cow()) {
+        Ok(result) => assert_eq!(result.strategy, CloneStrategy::Reflink),
+        Err(error) => assert!(matches!(error, CowError::CowUnsupported { .. })),
+    }
 }

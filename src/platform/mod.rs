@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::{
     CloneStrategy,
-    tree::{BackendError, TreeStats},
+    tree::{BackendError, TreeStats, UnsupportedReason},
 };
 
 pub(crate) fn clone_cow(
@@ -21,5 +21,5 @@ pub(crate) fn clone_cow(
     return linux::clone_cow(source, destination);
 
     #[allow(unreachable_code)]
-    Err(BackendError::Unsupported)
+    Err(BackendError::Unsupported(UnsupportedReason::Unavailable))
 }

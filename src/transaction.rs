@@ -31,28 +31,30 @@ impl DestinationGuard {
                         &guard.private_root,
                         <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
                     )
-                    .map_err(|source| CowError::Io {
-                        operation: "securing private destination",
-                        path: guard.private_root.clone(),
-                        source,
+                    .map_err(|source| {
+                        CowError::from_io(
+                            "securing private destination",
+                            &guard.private_root,
+                            source,
+                        )
                     })?;
                     return Ok(guard);
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(source) => {
-                    return Err(CowError::Io {
-                        operation: "creating private destination",
-                        path: private_root,
+                    return Err(CowError::from_io(
+                        "creating private destination",
+                        &private_root,
                         source,
-                    });
+                    ));
                 }
             }
         }
-        Err(CowError::Io {
-            operation: "choosing a private destination",
-            path: parent.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::AlreadyExists, "temporary name collisions"),
-        })
+        Err(CowError::from_io(
+            "choosing a private destination",
+            parent,
+            io::Error::new(io::ErrorKind::AlreadyExists, "temporary name collisions"),
+        ))
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -71,11 +73,7 @@ impl DestinationGuard {
                     path: self.destination.clone(),
                 }
             } else {
-                CowError::Io {
-                    operation: "exposing completed destination",
-                    path: self.destination.clone(),
-                    source,
-                }
+                CowError::from_io("exposing completed destination", &self.destination, source)
             }
         })?;
         let _ = fs::remove_dir(&self.private_root);
@@ -97,11 +95,11 @@ fn remove_private(path: &Path) -> Result<(), CowError> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(source) => {
-            return Err(CowError::Io {
-                operation: "reading private destination",
-                path: path.to_path_buf(),
+            return Err(CowError::from_io(
+                "reading private destination",
+                path,
                 source,
-            });
+            ));
         }
     };
     let result = if metadata.file_type().is_dir() {
@@ -109,11 +107,7 @@ fn remove_private(path: &Path) -> Result<(), CowError> {
     } else {
         fs::remove_file(path)
     };
-    result.map_err(|source| CowError::Io {
-        operation: "cleaning private destination",
-        path: path.to_path_buf(),
-        source,
-    })
+    result.map_err(|source| CowError::from_io("cleaning private destination", path, source))
 }
 
 fn c_path(path: &Path) -> io::Result<CString> {

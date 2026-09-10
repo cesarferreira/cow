@@ -28,8 +28,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
 
     steps:
       - uses: actions/checkout@v6
@@ -47,18 +45,11 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package (Unix)
-        if: matrix.target != 'x86_64-pc-windows-msvc'
+      - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../cow-${{ matrix.target }}.tar.gz cow
           cd ../../..
-
-      - name: Package (Windows)
-        if: matrix.target == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/cow.exe" -DestinationPath "cow-${{ matrix.target }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -69,7 +60,6 @@ jobs:
   release:
     name: Release
     needs: build
-    if: always() && needs.build.result != 'cancelled'
     runs-on: ubuntu-latest
 
     steps:

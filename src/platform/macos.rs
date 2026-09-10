@@ -2,7 +2,7 @@ use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path};
 
 use crate::{
     CloneStrategy,
-    tree::{BackendError, TreeStats, io_error, measure_tree},
+    tree::{BackendError, TreeStats, UnsupportedReason, io_error, measure_tree},
 };
 
 const CLONE_NOFOLLOW: u32 = 0x0001;
@@ -24,7 +24,8 @@ pub(super) fn clone_cow(
             return Err(crate::CowError::Cancelled.into());
         }
         return match error.raw_os_error() {
-            Some(libc::ENOTSUP | libc::EXDEV) => Err(BackendError::Unsupported),
+            Some(libc::ENOTSUP) => Err(BackendError::Unsupported(UnsupportedReason::Unavailable)),
+            Some(libc::EXDEV) => Err(BackendError::Unsupported(UnsupportedReason::CrossDevice)),
             _ => Err(io_error(
                 "cloning directory with clonefile",
                 destination,
@@ -32,7 +33,10 @@ pub(super) fn clone_cow(
             )),
         };
     }
-    Ok((CloneStrategy::ApfsClone, measure_tree(source)?))
+    if crate::cancellation::requested() {
+        return Err(crate::CowError::Cancelled.into());
+    }
+    Ok((CloneStrategy::ApfsClone, measure_tree(destination)?))
 }
 
 fn c_path(path: &Path) -> io::Result<CString> {

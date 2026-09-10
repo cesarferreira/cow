@@ -15,11 +15,7 @@ pub(crate) fn inspect(path: &Path) -> Result<FilesystemInfo, CowError> {
                 path: path.to_path_buf(),
             }
         } else {
-            CowError::Io {
-                operation: "canonicalizing inspected path",
-                path: path.to_path_buf(),
-                source: error,
-            }
+            CowError::from_io("canonicalizing inspected path", path, error)
         }
     })?;
     let probe_directory = if canonical.is_dir() {
@@ -87,7 +83,7 @@ fn probe_capability(directory: &Path) -> CowCapability {
         drop(file);
         let capability = match platform::clone_cow(&cleanup.source, &cleanup.destination) {
             Ok(_) => CowCapability::Supported,
-            Err(BackendError::Unsupported) => CowCapability::Unavailable,
+            Err(BackendError::Unsupported(_)) => CowCapability::Unavailable,
             Err(BackendError::Fatal(_)) => CowCapability::Unknown,
         };
         return capability;
