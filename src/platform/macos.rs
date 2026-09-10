@@ -1,4 +1,10 @@
-use std::{ffi::CString, io, os::unix::ffi::OsStrExt, path::Path};
+use std::{
+    ffi::CString,
+    fs::File,
+    io,
+    os::{fd::AsRawFd, unix::ffi::OsStrExt},
+    path::Path,
+};
 
 use crate::{
     CloneStrategy,
@@ -8,16 +14,21 @@ use crate::{
 const CLONE_NOFOLLOW: u32 = 0x0001;
 
 pub(super) fn clone_cow(
-    source: &Path,
+    source: &File,
+    _source_display: &Path,
     destination: &Path,
 ) -> Result<(CloneStrategy, TreeStats), BackendError> {
-    let source_c =
-        c_path(source).map_err(|error| io_error("encoding source path", source, error))?;
     let destination_c = c_path(destination)
         .map_err(|error| io_error("encoding destination path", destination, error))?;
-    // SAFETY: Both pointers contain valid, NUL-terminated path bytes for the duration of the call.
-    let result =
-        unsafe { libc::clonefile(source_c.as_ptr(), destination_c.as_ptr(), CLONE_NOFOLLOW) };
+    // SAFETY: The source descriptor is retained from validation and the destination path is NUL-terminated.
+    let result = unsafe {
+        libc::fclonefileat(
+            source.as_raw_fd(),
+            libc::AT_FDCWD,
+            destination_c.as_ptr(),
+            CLONE_NOFOLLOW,
+        )
+    };
     if result != 0 {
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::Interrupted && crate::cancellation::requested() {

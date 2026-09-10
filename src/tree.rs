@@ -84,8 +84,12 @@ impl EntryMetadata {
     }
 }
 
-pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<TreeStats, CowError> {
-    clone_tree(source, destination, &mut copy_file).map_err(|error| match error {
+pub(crate) fn copy_tree(
+    source: &File,
+    source_display: &Path,
+    destination: &Path,
+) -> Result<TreeStats, CowError> {
+    clone_tree(source, source_display, destination, &mut copy_file).map_err(|error| match error {
         BackendError::Fatal(error) => error,
         BackendError::Unsupported(_) => CowError::Unavailable("regular copy reported unsupported"),
     })
@@ -119,7 +123,8 @@ pub(crate) fn measure_tree(source: &Path) -> Result<TreeStats, BackendError> {
 }
 
 pub(crate) fn clone_tree<F>(
-    source: &Path,
+    source: &File,
+    source_display: &Path,
     destination: &Path,
     regular_file: &mut F,
 ) -> Result<TreeStats, BackendError>
@@ -129,31 +134,53 @@ where
     if crate::cancellation::requested() {
         return Err(CowError::Cancelled.into());
     }
-    let metadata = fs::symlink_metadata(source)
-        .map_err(|error| io_error("reading source metadata", source, error))?;
+    let metadata = source
+        .metadata()
+        .map_err(|error| io_error("reading source metadata", source_display, error))?;
     let mut stats = TreeStats::default();
     if metadata.is_dir() {
-        let (directory, opened) = open_directory_nofollow(source)?;
-        ensure_same_entry(source, &metadata, &opened)?;
         fs::create_dir(destination)
             .map_err(|error| io_error("creating directory", destination, error))?;
-        clone_open_directory(&directory, source, destination, regular_file, &mut stats)?;
-        restore_metadata(destination, &EntryMetadata::from_std(&opened))?;
+        clone_open_directory(
+            source,
+            source_display,
+            destination,
+            regular_file,
+            &mut stats,
+        )?;
+        restore_metadata(destination, &EntryMetadata::from_std(&metadata))?;
     } else if metadata.is_file() {
-        let (input, opened) = open_regular_nofollow(source)?;
-        ensure_same_entry(source, &metadata, &opened)?;
-        regular_file(source, &input, destination)?;
-        let opened = EntryMetadata::from_std(&opened);
+        regular_file(source_display, source, destination)?;
+        let opened = EntryMetadata::from_std(&metadata);
         restore_metadata(destination, &opened)?;
         stats.files = 1;
         stats.logical_bytes = opened.len;
     } else {
         return Err(CowError::UnsupportedFileType {
-            path: source.to_path_buf(),
+            path: source_display.to_path_buf(),
         }
         .into());
     }
     Ok(stats)
+}
+
+pub(crate) fn open_directory_path_nofollow(path: &Path) -> Result<File, BackendError> {
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(Path::new("/"))
+        .map_err(|error| io_error("opening filesystem root", Path::new("/"), error))?;
+    for component in path.components() {
+        use std::path::Component;
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => {
+                directory = open_directory_at(directory.as_raw_fd(), name, path)?;
+            }
+            _ => return Err(changed_entry(path)),
+        }
+    }
+    Ok(directory)
 }
 
 fn clone_open_directory<F>(
@@ -246,6 +273,7 @@ fn copy_file(source: &Path, input: &File, destination: &Path) -> Result<(), Back
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn open_regular_nofollow(path: &Path) -> Result<(File, fs::Metadata), BackendError> {
     let file = OpenOptions::new()
         .read(true)
@@ -267,6 +295,7 @@ pub(crate) fn open_regular_nofollow(path: &Path) -> Result<(File, fs::Metadata),
     Ok((file, metadata))
 }
 
+#[cfg(test)]
 pub(crate) fn open_directory_nofollow(path: &Path) -> Result<(File, fs::Metadata), BackendError> {
     let file = OpenOptions::new()
         .read(true)
@@ -435,18 +464,6 @@ fn c_name(name: &OsStr, display: &Path) -> Result<CString, BackendError> {
     })
 }
 
-fn ensure_same_entry(
-    path: &Path,
-    before: &fs::Metadata,
-    opened: &fs::Metadata,
-) -> Result<(), BackendError> {
-    ensure_same_raw_entry(
-        path,
-        &EntryMetadata::from_std(before),
-        &EntryMetadata::from_std(opened),
-    )
-}
-
 fn ensure_same_raw_entry(
     path: &Path,
     before: &EntryMetadata,
@@ -534,7 +551,7 @@ mod tests {
 
     use crate::{CowError, cancellation};
 
-    use super::copy_tree;
+    use super::{copy_tree, open_directory_nofollow};
 
     #[test]
     fn copy_stops_when_cancellation_is_requested() {
@@ -544,7 +561,8 @@ mod tests {
         fs::create_dir(&source).unwrap();
         fs::write(source.join("data"), "content").unwrap();
         cancellation::request_for_test();
-        let result = copy_tree(&source, &destination);
+        let source_root = open_directory_nofollow(&source).unwrap().0;
+        let result = copy_tree(&source_root, &source, &destination);
         cancellation::reset_for_test();
         assert!(matches!(result, Err(CowError::Cancelled)));
     }

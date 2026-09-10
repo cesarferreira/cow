@@ -7,7 +7,7 @@ mod tree;
 mod types;
 mod validation;
 
-use std::{path::Path, time::Instant};
+use std::{fs::File, path::Path, time::Instant};
 
 pub use error::CowError;
 pub use types::{
@@ -44,17 +44,17 @@ fn clone_validated_with<F>(
     mut cow_backend: F,
 ) -> Result<CloneResult, CowError>
 where
-    F: FnMut(&Path, &Path) -> Result<(CloneStrategy, tree::TreeStats), tree::BackendError>,
+    F: FnMut(&File, &Path, &Path) -> Result<(CloneStrategy, tree::TreeStats), tree::BackendError>,
 {
     let started = Instant::now();
     let mut guard = transaction::DestinationGuard::new(&paths.destination)?;
     let (strategy, stats) = match options.strategy {
         StrategyPreference::Copy => (
             CloneStrategy::Copy,
-            tree::copy_tree(&paths.source, guard.path())?,
+            tree::copy_tree(&paths.source_root, &paths.source, guard.path())?,
         ),
         StrategyPreference::Cow | StrategyPreference::Auto => {
-            match cow_backend(&paths.source, guard.path()) {
+            match cow_backend(&paths.source_root, &paths.source, guard.path()) {
                 Ok(result) => result,
                 Err(tree::BackendError::Unsupported(_))
                     if options.strategy == StrategyPreference::Auto =>
@@ -62,7 +62,7 @@ where
                     guard.reset()?;
                     (
                         CloneStrategy::Copy,
-                        tree::copy_tree(&paths.source, guard.path())?,
+                        tree::copy_tree(&paths.source_root, &paths.source, guard.path())?,
                     )
                 }
                 Err(tree::BackendError::Unsupported(reason)) => {
@@ -110,12 +110,13 @@ mod tests {
         fs::write(source.join("data"), "complete").unwrap();
         let paths = crate::validation::validate_paths(&source, &destination).unwrap();
 
-        let result = super::clone_validated_with(paths, CloneOptions::default(), |_, private| {
-            fs::create_dir(private).unwrap();
-            fs::write(private.join("partial"), "partial").unwrap();
-            Err(BackendError::Unsupported(UnsupportedReason::Unavailable))
-        })
-        .unwrap();
+        let result =
+            super::clone_validated_with(paths, CloneOptions::default(), |_, _, private| {
+                fs::create_dir(private).unwrap();
+                fs::write(private.join("partial"), "partial").unwrap();
+                Err(BackendError::Unsupported(UnsupportedReason::Unavailable))
+            })
+            .unwrap();
 
         assert_eq!(result.strategy, CloneStrategy::Copy);
         assert_eq!(
@@ -144,7 +145,7 @@ mod tests {
             CloneOptions {
                 strategy: StrategyPreference::Cow,
             },
-            |_, _| Err(BackendError::Unsupported(UnsupportedReason::CrossDevice)),
+            |_, _, _| Err(BackendError::Unsupported(UnsupportedReason::CrossDevice)),
         )
         .unwrap_err();
         assert!(matches!(error, crate::CowError::CrossDevice { .. }));
@@ -157,11 +158,45 @@ mod tests {
         let destination = root.path().join("destination");
         fs::create_dir(&source).unwrap();
         let paths = crate::validation::validate_paths(&source, &destination).unwrap();
-        let error = super::clone_validated_with(paths, CloneOptions::default(), |_, _| {
+        let error = super::clone_validated_with(paths, CloneOptions::default(), |_, _, _| {
             Err(BackendError::Fatal(crate::CowError::Cancelled))
         })
         .unwrap_err();
         assert!(matches!(error, crate::CowError::Cancelled));
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn validated_source_survives_an_ancestor_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let ancestor = root.path().join("ancestor");
+        let moved = root.path().join("moved");
+        let outside = root.path().join("outside");
+        let source = ancestor.join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("data"), "original").unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("data"), "outside").unwrap();
+        let paths = crate::validation::validate_paths(&source, &destination).unwrap();
+
+        fs::rename(&ancestor, &moved).unwrap();
+        symlink(&outside, &ancestor).unwrap();
+        let result = super::clone_validated_with(
+            paths,
+            CloneOptions {
+                strategy: StrategyPreference::Copy,
+            },
+            |_, _, _| unreachable!(),
+        )
+        .unwrap();
+
+        assert_eq!(result.strategy, CloneStrategy::Copy);
+        assert_eq!(
+            fs::read_to_string(destination.join("data")).unwrap(),
+            "original"
+        );
     }
 }

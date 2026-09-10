@@ -1,9 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 use crate::CowError;
 
 pub(crate) struct ValidatedPaths {
     pub source: PathBuf,
+    pub source_root: File,
     pub destination: PathBuf,
 }
 
@@ -34,6 +38,13 @@ pub(crate) fn validate_paths(
 
     let source = std::fs::canonicalize(source)
         .map_err(|source_error| CowError::from_io("canonicalizing source", source, source_error))?;
+    let source_root =
+        crate::tree::open_directory_path_nofollow(&source).map_err(|error| match error {
+            crate::tree::BackendError::Fatal(error) => error,
+            crate::tree::BackendError::Unsupported(_) => {
+                CowError::Unavailable("opening validated source directory")
+            }
+        })?;
     let file_name = destination
         .file_name()
         .ok_or_else(|| CowError::DestinationExists {
@@ -54,6 +65,7 @@ pub(crate) fn validate_paths(
 
     Ok(ValidatedPaths {
         source,
+        source_root,
         destination,
     })
 }

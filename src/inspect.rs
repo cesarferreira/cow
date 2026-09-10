@@ -1,6 +1,6 @@
 use std::{
     ffi::CString,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -48,40 +48,46 @@ fn native_strategy() -> CloneStrategy {
 }
 
 struct ProbeCleanup {
-    source: PathBuf,
-    destination: PathBuf,
+    directory: PathBuf,
 }
 
 impl Drop for ProbeCleanup {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.destination);
-        let _ = fs::remove_file(&self.source);
+        let _ = fs::remove_dir_all(&self.directory);
     }
 }
 
 fn probe_capability(directory: &Path) -> CowCapability {
     for _ in 0..16 {
         let suffix = rand::random::<u64>();
-        let source = directory.join(format!(".cow-probe-source-{suffix:016x}"));
-        let destination = directory.join(format!(".cow-probe-destination-{suffix:016x}"));
+        let probe_directory = directory.join(format!(".cow-probe-{suffix:016x}"));
+        match fs::create_dir(&probe_directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return CowCapability::Unknown,
+        }
+        let cleanup = ProbeCleanup {
+            directory: probe_directory,
+        };
+        let source = cleanup.directory.join("source");
+        let destination = cleanup.directory.join("destination");
         let mut file = match OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&source)
         {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(_) => return CowCapability::Unknown,
-        };
-        let cleanup = ProbeCleanup {
-            source,
-            destination,
         };
         if file.write_all(b"cow capability probe").is_err() {
             return CowCapability::Unknown;
         }
         drop(file);
-        let capability = match platform::clone_cow(&cleanup.source, &cleanup.destination) {
+        let source_file = match File::open(&source) {
+            Ok(file) => file,
+            Err(_) => return CowCapability::Unknown,
+        };
+        let capability = match platform::clone_cow(&source_file, &source, &destination) {
             Ok(_) => CowCapability::Supported,
             Err(BackendError::Unsupported(_)) => CowCapability::Unavailable,
             Err(BackendError::Fatal(_)) => CowCapability::Unknown,

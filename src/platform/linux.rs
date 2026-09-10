@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::fd::AsRawFd,
     path::Path,
@@ -11,23 +11,23 @@ use crate::{
 };
 
 pub(super) fn clone_cow(
-    source: &Path,
+    source: &File,
+    source_display: &Path,
     destination: &Path,
 ) -> Result<(CloneStrategy, TreeStats), BackendError> {
+    ensure_same_filesystem(source, destination)?;
     probe_reflink(destination)?;
-    let stats = clone_tree(source, destination, &mut reflink_file)?;
+    let stats = clone_tree(source, source_display, destination, &mut reflink_file)?;
     Ok((CloneStrategy::Reflink, stats))
 }
 
-struct ProbeCleanup<'a> {
-    source: &'a Path,
-    destination: &'a Path,
+struct ProbeCleanup {
+    directory: std::path::PathBuf,
 }
 
-impl Drop for ProbeCleanup<'_> {
+impl Drop for ProbeCleanup {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.destination);
-        let _ = std::fs::remove_file(self.source);
+        let _ = fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -39,12 +39,35 @@ fn probe_reflink(destination: &Path) -> Result<(), BackendError> {
             std::io::Error::other("destination has no parent"),
         )
     })?;
-    let source = parent.join("reflink-probe-source");
-    let clone = parent.join("reflink-probe-destination");
+    let probe_directory = (0..16)
+        .find_map(|_| {
+            let candidate =
+                parent.join(format!(".cow-reflink-probe-{:016x}", rand::random::<u64>()));
+            match fs::create_dir(&candidate) {
+                Ok(()) => Some(Ok(candidate)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(io_error(
+                    "creating private reflink probe directory",
+                    &candidate,
+                    error,
+                ))),
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(io_error(
+                "creating private reflink probe directory",
+                parent,
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "could not allocate a unique probe directory",
+                ),
+            ))
+        })?;
     let cleanup = ProbeCleanup {
-        source: &source,
-        destination: &clone,
+        directory: probe_directory,
     };
+    let source = cleanup.directory.join("source");
+    let clone = cleanup.directory.join("destination");
     let mut source_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -59,6 +82,28 @@ fn probe_reflink(destination: &Path) -> Result<(), BackendError> {
     let result = reflink_file(&source, &input, &clone);
     drop(cleanup);
     result
+}
+
+fn ensure_same_filesystem(source: &File, destination: &Path) -> Result<(), BackendError> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = destination.parent().ok_or_else(|| {
+        io_error(
+            "locating destination parent",
+            destination,
+            std::io::Error::other("destination has no parent"),
+        )
+    })?;
+    let source_device = source
+        .metadata()
+        .map_err(|error| io_error("reading source filesystem", destination, error))?
+        .dev();
+    let destination_device = fs::metadata(parent)
+        .map_err(|error| io_error("reading destination filesystem", parent, error))?
+        .dev();
+    if source_device != destination_device {
+        return Err(BackendError::Unsupported(UnsupportedReason::CrossDevice));
+    }
+    Ok(())
 }
 
 fn reflink_file(_source: &Path, input: &File, destination: &Path) -> Result<(), BackendError> {
