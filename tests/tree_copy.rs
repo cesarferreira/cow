@@ -1,6 +1,6 @@
 use std::{
     fs,
-    os::unix::{fs::PermissionsExt, net::UnixListener},
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt, net::UnixListener},
 };
 
 use cow::{CloneOptions, CloneStrategy, CowError, clone_dir};
@@ -71,15 +71,26 @@ fn physical_copy_preserves_the_complete_tree() {
 
 #[test]
 fn failure_removes_the_private_destination() {
+    // Root bypasses the permission check that makes this source unreadable.
+    // SAFETY: `geteuid` reads the calling process identity and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: running as root, an unreadable directory would still open");
+        return;
+    }
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     let destination = root.path().join("destination");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("before"), "content").unwrap();
-    let _socket = UnixListener::bind(source.join("socket")).unwrap();
+    let unreadable = source.join("unreadable");
+    fs::create_dir(&unreadable).unwrap();
+    fs::write(unreadable.join("hidden"), "hidden").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
 
     let error = clone_dir(&source, &destination, CloneOptions::copy()).unwrap_err();
-    assert!(matches!(error, CowError::UnsupportedFileType { .. }));
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(error, CowError::PermissionDenied { .. }));
     assert!(!destination.exists());
     assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
         !entry
@@ -89,4 +100,59 @@ fn failure_removes_the_private_destination() {
             .starts_with(".cow-tmp-")
     }));
     assert!(source.exists());
+}
+
+#[test]
+fn copy_skips_sockets_and_fifos() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("destination");
+    fs::create_dir_all(source.join("nested")).unwrap();
+    fs::write(source.join("nested/data"), "content").unwrap();
+    let _socket = UnixListener::bind(source.join("nested/socket")).unwrap();
+    let fifo = source.join("pipe");
+    let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: The path is NUL-terminated and points inside a temporary directory.
+    assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+
+    let result = clone_dir(&source, &destination, CloneOptions::copy()).unwrap();
+
+    assert_eq!(result.skipped, 2);
+    assert_eq!(result.files, 1);
+    assert_eq!(
+        fs::read_to_string(destination.join("nested/data")).unwrap(),
+        "content"
+    );
+    assert!(!destination.join("nested/socket").exists());
+    assert!(!destination.join("pipe").exists());
+    assert!(destination.join("nested").is_dir());
+}
+
+#[test]
+fn copy_still_rejects_device_nodes() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    let node = source.join("null");
+    let node_c = std::ffi::CString::new(node.as_os_str().as_bytes()).unwrap();
+    // SAFETY: The path is NUL-terminated and points inside a temporary directory.
+    let created = unsafe {
+        libc::mknod(
+            node_c.as_ptr(),
+            libc::S_IFCHR | 0o600,
+            libc::makedev(1, 3) as libc::dev_t,
+        )
+    };
+    if created != 0 {
+        eprintln!(
+            "skipped: creating a device node requires privileges ({})",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+
+    let error = clone_dir(&source, &destination, CloneOptions::copy()).unwrap_err();
+    assert!(matches!(error, CowError::UnsupportedFileType { .. }));
+    assert!(!destination.exists());
 }

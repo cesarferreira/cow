@@ -88,6 +88,7 @@ where
         strategy,
         logical_bytes: stats.logical_bytes,
         files: stats.files,
+        skipped: stats.skipped,
         duration: started.elapsed(),
     })
 }

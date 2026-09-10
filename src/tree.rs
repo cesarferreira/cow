@@ -32,11 +32,28 @@ const REGULAR_TYPE: u32 = libc::S_IFREG;
 const SYMLINK_TYPE: u32 = libc::S_IFLNK as u32;
 #[cfg(target_os = "linux")]
 const SYMLINK_TYPE: u32 = libc::S_IFLNK;
+#[cfg(target_os = "macos")]
+const SOCKET_TYPE: u32 = libc::S_IFSOCK as u32;
+#[cfg(target_os = "linux")]
+const SOCKET_TYPE: u32 = libc::S_IFSOCK;
+#[cfg(target_os = "macos")]
+const FIFO_TYPE: u32 = libc::S_IFIFO as u32;
+#[cfg(target_os = "linux")]
+const FIFO_TYPE: u32 = libc::S_IFIFO;
+#[cfg(all(test, target_os = "macos"))]
+const CHAR_DEVICE_TYPE: u32 = libc::S_IFCHR as u32;
+#[cfg(all(test, target_os = "linux"))]
+const CHAR_DEVICE_TYPE: u32 = libc::S_IFCHR;
+#[cfg(all(test, target_os = "macos"))]
+const BLOCK_DEVICE_TYPE: u32 = libc::S_IFBLK as u32;
+#[cfg(all(test, target_os = "linux"))]
+const BLOCK_DEVICE_TYPE: u32 = libc::S_IFBLK;
 
 #[derive(Debug, Default)]
 pub(crate) struct TreeStats {
     pub logical_bytes: u64,
     pub files: u64,
+    pub skipped: u64,
 }
 
 #[derive(Debug)]
@@ -119,7 +136,10 @@ pub(crate) fn measure_tree(source: &Path) -> Result<TreeStats, BackendError> {
             let child = measure_tree(&entry.path())?;
             stats.files += child.files;
             stats.logical_bytes += child.logical_bytes;
+            stats.skipped += child.skipped;
         }
+    } else if EntryAction::for_kind(metadata.mode() & FILE_TYPE_MASK) == EntryAction::Skip {
+        stats.skipped = 1;
     } else if !metadata.file_type().is_symlink() {
         return Err(CowError::UnsupportedFileType {
             path: source.to_path_buf(),
@@ -207,8 +227,8 @@ where
         let source_entry = source_display.join(&name);
         let destination_entry = destination.join(&name);
         let before = metadata_at(directory.as_raw_fd(), &name, &source_entry)?;
-        match before.kind() {
-            DIRECTORY_TYPE => {
+        match EntryAction::for_kind(before.kind()) {
+            EntryAction::Directory => {
                 let child = open_directory_at(directory.as_raw_fd(), &name, &source_entry)?;
                 let opened = EntryMetadata::from_std(&child.metadata().map_err(|error| {
                     io_error("reading opened directory metadata", &source_entry, error)
@@ -225,7 +245,7 @@ where
                 )?;
                 restore_metadata(&destination_entry, &opened)?;
             }
-            REGULAR_TYPE => {
+            EntryAction::Regular => {
                 let input = open_regular_at(directory.as_raw_fd(), &name, &source_entry)?;
                 let opened = EntryMetadata::from_std(&input.metadata().map_err(|error| {
                     io_error("reading opened file metadata", &source_entry, error)
@@ -236,7 +256,7 @@ where
                 stats.files += 1;
                 stats.logical_bytes += opened.len;
             }
-            SYMLINK_TYPE => {
+            EntryAction::Symlink => {
                 let target = read_link_at(directory.as_raw_fd(), &name, &source_entry)?;
                 let after = metadata_at(directory.as_raw_fd(), &name, &source_entry)?;
                 ensure_same_raw_entry(&source_entry, &before, &after)?;
@@ -247,12 +267,40 @@ where
                         io_error("restoring symlink timestamps", &destination_entry, error)
                     })?;
             }
-            _ => {
+            EntryAction::Skip => {
+                stats.skipped += 1;
+            }
+            EntryAction::Unsupported => {
                 return Err(CowError::UnsupportedFileType { path: source_entry }.into());
             }
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryAction {
+    Directory,
+    Regular,
+    Symlink,
+    /// Sockets and FIFOs cannot be reproduced meaningfully and opening a FIFO
+    /// would block, so they are counted and left out of the destination. Live
+    /// Git repositories routinely contain `.git/fsmonitor--daemon.ipc`.
+    Skip,
+    /// Device nodes stay a hard error rather than being silently dropped.
+    Unsupported,
+}
+
+impl EntryAction {
+    fn for_kind(kind: u32) -> Self {
+        match kind {
+            DIRECTORY_TYPE => Self::Directory,
+            REGULAR_TYPE => Self::Regular,
+            SYMLINK_TYPE => Self::Symlink,
+            SOCKET_TYPE | FIFO_TYPE => Self::Skip,
+            _ => Self::Unsupported,
+        }
+    }
 }
 
 fn copy_file(
@@ -635,6 +683,31 @@ mod tests {
     use crate::{CowError, cancellation};
 
     use super::{copy_tree, open_directory_nofollow};
+
+    #[test]
+    fn device_nodes_are_never_silently_skipped() {
+        use super::{
+            BLOCK_DEVICE_TYPE, CHAR_DEVICE_TYPE, DIRECTORY_TYPE, EntryAction, FIFO_TYPE,
+            REGULAR_TYPE, SOCKET_TYPE, SYMLINK_TYPE,
+        };
+
+        assert_eq!(
+            EntryAction::for_kind(CHAR_DEVICE_TYPE),
+            EntryAction::Unsupported
+        );
+        assert_eq!(
+            EntryAction::for_kind(BLOCK_DEVICE_TYPE),
+            EntryAction::Unsupported
+        );
+        assert_eq!(EntryAction::for_kind(SOCKET_TYPE), EntryAction::Skip);
+        assert_eq!(EntryAction::for_kind(FIFO_TYPE), EntryAction::Skip);
+        assert_eq!(EntryAction::for_kind(REGULAR_TYPE), EntryAction::Regular);
+        assert_eq!(
+            EntryAction::for_kind(DIRECTORY_TYPE),
+            EntryAction::Directory
+        );
+        assert_eq!(EntryAction::for_kind(SYMLINK_TYPE), EntryAction::Symlink);
+    }
 
     #[test]
     fn copy_stops_when_cancellation_is_requested() {

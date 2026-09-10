@@ -117,75 +117,88 @@ println!("{:?}", result.strategy);
 CoW. `--strategy copy` always creates physical copies. The destination must not
 already exist; `cow` never provides a force/overwrite option.
 
+Sockets and FIFOs cannot be reproduced meaningfully, so they are skipped and
+reported in the `skipped` count rather than aborting the clone. This matters
+for live Git repositories, which keep a `.git/fsmonitor--daemon.ipc` socket
+when `core.fsmonitor` is enabled. Device nodes remain a hard error.
+
 <a id="performance"></a>
 ## Performance: CoW vs copy vs Git worktree
 
-On the measured APFS fixture, `cow` reproduced the complete 205 MiB working
-directory **about 34× faster than `cp -R`**, while initially allocating roughly
-7 MiB of additional filesystem space.
+**`cow` buys disk space, not wall-clock time.** On a monorepo-shaped fixture on
+XFS — 252,206 files totalling 3.05 GiB, of which 100,001 are tracked — cloning
+the complete working tree cost **141 MiB** of new allocation instead of the
+**3.63 GiB** a physical copy needs. It took about as long as `cp`, because
+Linux reflinks file by file and per-file syscalls dominate at this file count.
 
-| Method | Median creation time | Apparent output size | Approx. new APFS allocation | Current filesystem state | Git metadata |
+| Method | Median time | Apparent output | New XFS allocation | Filesystem state | Git metadata |
 |---|---:|---:|---:|---|---|
-| `cow clone --require-cow` | **60 ms** | 205 MiB | **7.1 MiB** | Complete | Independent `.git/` |
-| `cp -R` | 2.06 s | 205 MiB | 216 MiB | Complete | Independent `.git/` |
-| `git worktree add --detach` | **50 ms** | 32 MiB | 35.8 MiB | Tracked checkout only | Linked to source repository |
+| `cow clone --require-cow` | 23.1 s | 3.05 GiB | **141 MiB** | Complete | Independent `.git/` |
+| `cp -R` (GNU 9.4, reflinks by default) | 21.9 s | 3.05 GiB | 151 MiB | Complete | Independent `.git/` |
+| `cp -a --reflink=never` | 24.8 s | 3.05 GiB | 3.63 GiB | Complete | Independent `.git/` |
+| `git worktree add --detach` | **7.0 s** | 1.00 GiB | 1.21 GiB | Tracked checkout only | Linked to source repository |
 
-On Linux, CoW is per-file (`FICLONE`) rather than a whole-tree clone. On the
-same fixture on XFS it still avoided a full physical copy (**about 2.7 MiB**
-new allocation versus **222 MiB** for `cp -a --reflink=never`), but it was not
-faster than `cp`: thousands of small files make metadata syscalls dominate.
-GitHub-hosted Ubuntu runners typically use ext4 without reflink, so `cow`
-falls back to a regular copy there unless you pass `--require-cow`.
+A Git worktree is the fastest option here, but it is not a directory copy and
+it is not free. It writes every tracked file, so its cost scales with the
+tracked file count — and with Git LFS smudging or `post-checkout` hooks it gets
+substantially slower on real repositories. It also omits untracked and ignored
+files such as `node_modules/`, `target/`, `.gradle/`, build outputs, and local
+configuration: above, 1.00 GiB and 100,002 files versus the full 3.05 GiB and
+252,206. Its Git metadata stays linked to the source repository.
 
-| Method | Median creation time | Apparent output size | Approx. new XFS allocation | Current filesystem state | Git metadata |
-|---|---:|---:|---:|---|---|
-| `cow clone --require-cow` | 520 ms | 200 MiB | **2.7 MiB** | Complete | Independent `.git/` |
-| `cp -R` (GNU 9.4, also reflinked) | 429 ms | 200 MiB | **2.7 MiB** | Complete | Independent `.git/` |
-| `cp -a --reflink=never` | 378 ms | 200 MiB | 222 MiB | Complete | Independent `.git/` |
-| `git worktree add --detach` | **37 ms** | 32 MiB | 32.0 MiB | Tracked checkout only | Linked to source repository |
+`cow` instead reproduces the current filesystem state, including an independent
+`.git/`. Choose it when you want the whole working directory — build caches and
+all — without paying for it twice on disk. Choose a worktree when a clean
+tracked checkout is all you need.
 
-A Git worktree is quick, but it is not a directory copy: it omits untracked and
-ignored files such as `node_modules/`, `target/`, `.gradle/`, build outputs, and
-local configuration, and its Git metadata remains linked to the source
-repository. `cow` instead starts from the current filesystem state, including
-an independent Git repository. Sockets, devices, and FIFOs (including Git's
-`fsmonitor` socket under `.git/`) currently abort the clone.
+On a private ~160,000-file, 40 GiB monorepo working tree on the same hardware,
+`cow clone --require-cow` finished in 17.2 s with 0.11 GiB of new allocation
+and skipped one `fsmonitor` socket.
 
 <details>
 <summary><strong>Benchmark methodology</strong></summary>
 
-APFS numbers were measured on macOS 26.6.2, Apple Silicon (`arm64`), APFS,
-Git 2.55.0, and Rust 1.98.1. Linux numbers were measured on Ubuntu 24.04.4,
-`x86_64`, Linux 6.17, XFS, Git 2.55.0, GNU coreutils 9.4, and Rust 1.98.1.
-The release binary was built with `cargo build --release`.
+Measured on Ubuntu 24.04.4, `x86_64`, Linux 6.17, XFS, Git 2.55.0, GNU
+coreutils 9.4, and Rust 1.98.1. The release binary was built with
+`cargo build --release`.
 
-The disposable source contained about 5,035 files with a ~200–205 MiB
-apparent size:
+The disposable fixture was shaped to match a large Android/Bazel monorepo,
+since file count rather than byte count dominates a per-file reflink clone:
 
-- 32 MiB of tracked random data and a tracked Rust source file;
-- 128 MiB of ignored build output;
-- 8 MiB of untracked random data;
-- 5,000 ignored dependency-like files; and
-- a normal `.git/` directory.
+- 99,000 small tracked source files spread across a module and package tree;
+- 1,000 tracked binary assets of 200–600 KB;
+- 50,000 ignored build artifacts under `build-out/`; and
+- a `.git/` directory holding the resulting loose objects.
 
-Each method ran five times on the same volume with filesystem caches left
-warm. The table reports medians. Commands:
+That totals 252,206 files and 3.05 GiB apparent, of which 100,001 files are
+tracked. `core.fsmonitor` was disabled in the fixture so no daemon socket
+appeared mid-run, and it uses neither Git LFS nor hooks — a real repository
+with either will make the worktree column slower.
+
+Each method ran five times on the same volume with caches left warm, deleting
+the destination between runs. The table reports medians. Commands:
 
 ```bash
 target/release/cow clone SOURCE DESTINATION --require-cow
 cp -R SOURCE DESTINATION
-cp -a --reflink=never SOURCE DESTINATION   # Linux physical-copy comparison
+cp -a --reflink=never SOURCE DESTINATION
 git -C SOURCE worktree add --detach DESTINATION HEAD
 ```
 
-Apparent size came from `du -skA` on macOS and `du --apparent-size -sk` on
-Linux. Incremental allocation is the median change in filesystem-used blocks
-from `df -kP` immediately before and after creation. That allocation figure is
-approximate and can include unrelated filesystem activity; it is included to
-show the initial order of magnitude, not as a universal storage guarantee. Times
-and allocation will vary with hardware, filesystem, source shape, and cache
-state. GNU `cp -R` may itself reflink on XFS and Btrfs; use
-`cp --reflink=never` when you need a physical copy.
+Apparent size came from `du --apparent-size -sk`. Incremental allocation is the
+median change in filesystem-used blocks from `df -kP` immediately before and
+after creation. That figure is approximate and can include unrelated filesystem
+activity; it shows the initial order of magnitude, not a universal storage
+guarantee. `cp -a --reflink=never` was the noisiest method, ranging from 18.6 s
+to 133.7 s across runs. Times and allocation vary with hardware, filesystem,
+source shape, and cache state. Note that GNU `cp -R` reflinks by default on XFS
+and Btrfs, which is why its allocation matches `cow`; use `cp --reflink=never`
+when you want a genuine physical copy.
+
+macOS was not re-measured at this scale. There `clonefile(2)` clones the whole
+tree in a single call rather than per file, so its time should scale differently
+— but that is untested for a monorepo-sized source, and no macOS timings are
+claimed here.
 
 </details>
 

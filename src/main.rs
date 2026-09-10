@@ -71,6 +71,7 @@ struct CloneOutput {
     cow: bool,
     logical_bytes: u64,
     files: u64,
+    skipped: u64,
     duration_ms: u64,
 }
 
@@ -83,6 +84,7 @@ impl From<&CloneResult> for CloneOutput {
             cow: result.strategy.is_cow(),
             logical_bytes: result.logical_bytes,
             files: result.files,
+            skipped: result.skipped,
             duration_ms: result.duration.as_millis().min(u128::from(u64::MAX)) as u64,
         }
     }
@@ -215,8 +217,20 @@ fn print_clone(result: &CloneResult, verbose: bool) {
     if verbose {
         eprintln!("Files: {}", result.files);
         eprintln!("Logical size: {} bytes", result.logical_bytes);
+        eprintln!("Skipped sockets and FIFOs: {}", result.skipped);
     } else if result.strategy == CloneStrategy::Copy {
         println!("  CoW unavailable or bypassed; used regular copy.");
+    }
+    if result.skipped > 0 && !verbose {
+        println!(
+            "  Skipped {} socket or FIFO {}.",
+            result.skipped,
+            if result.skipped == 1 {
+                "entry"
+            } else {
+                "entries"
+            }
+        );
     }
 }
 

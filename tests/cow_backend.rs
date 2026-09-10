@@ -50,25 +50,30 @@ fn automatic_strategy_always_produces_an_independent_clone() {
 }
 
 #[test]
-fn native_clone_rejects_special_files() {
+fn native_clone_skips_sockets_instead_of_failing() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     let destination = root.path().join("destination");
     fs::create_dir(&source).unwrap();
+    fs::write(source.join("data"), "kept").unwrap();
     let _socket = UnixListener::bind(source.join("socket")).unwrap();
 
     match clone_dir(&source, &destination, CloneOptions::require_cow()) {
-        Err(CowError::UnsupportedFileType { .. }) => {
+        Ok(result) => {
+            assert_eq!(result.skipped, 1);
+            assert_eq!(result.files, 1);
+            assert_eq!(
+                fs::read_to_string(destination.join("data")).unwrap(),
+                "kept"
+            );
+            assert!(!destination.join("socket").exists());
+        }
+        Err(error) => {
+            // Filesystems without reflink fail the CoW probe before the walk.
+            eprintln!("skipped native CoW verification: {error}");
+            assert!(matches!(error, CowError::CowUnsupported { .. }));
             assert!(!destination.exists());
         }
-        Err(CowError::CowUnsupported { .. }) => {
-            // Linux probes CoW with a temporary file before walking the tree. On
-            // filesystems without reflink that probe fails first; special-file
-            // rejection is still covered by the portable copy tests.
-            assert!(!destination.exists());
-        }
-        Ok(result) => panic!("native clone succeeded with a socket: {result:?}"),
-        Err(error) => panic!("unexpected error rejecting a socket: {error}"),
     }
 }
 

@@ -59,6 +59,8 @@ pub struct CloneResult {
     pub strategy: CloneStrategy,
     pub logical_bytes: u64,
     pub files: u64,
+    /// Sockets and FIFOs found in the source and left out of the destination.
+    pub skipped: u64,
     pub duration: Duration,
 }
 
