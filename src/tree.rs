@@ -119,30 +119,35 @@ pub(crate) fn copy_tree(
     })
 }
 
+/// Walks the freshly cloned destination, since `clonefile(2)` reproduces a whole
+/// tree in one call and reports no per-entry statistics.
 #[cfg(target_os = "macos")]
-pub(crate) fn measure_tree(source: &Path) -> Result<TreeStats, BackendError> {
-    let metadata = fs::symlink_metadata(source)
-        .map_err(|error| io_error("reading entry metadata", source, error))?;
+pub(crate) fn measure_tree(path: &Path) -> Result<TreeStats, BackendError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| io_error("reading entry metadata", path, error))?;
     let mut stats = TreeStats::default();
     if metadata.file_type().is_file() {
         stats.files = 1;
         stats.logical_bytes = metadata.len();
     } else if metadata.file_type().is_dir() {
         for entry in
-            fs::read_dir(source).map_err(|error| io_error("reading directory", source, error))?
+            fs::read_dir(path).map_err(|error| io_error("reading directory", path, error))?
         {
-            let entry =
-                entry.map_err(|error| io_error("reading directory entry", source, error))?;
+            let entry = entry.map_err(|error| io_error("reading directory entry", path, error))?;
             let child = measure_tree(&entry.path())?;
             stats.files += child.files;
             stats.logical_bytes += child.logical_bytes;
             stats.skipped += child.skipped;
         }
     } else if EntryAction::for_kind(metadata.mode() & FILE_TYPE_MASK) == EntryAction::Skip {
+        // Unlike the per-file Linux backend, clonefile does reproduce sockets and
+        // FIFOs. Drop them so both platforms yield the same destination tree.
+        fs::remove_file(path)
+            .map_err(|error| io_error("removing cloned socket or FIFO", path, error))?;
         stats.skipped = 1;
     } else if !metadata.file_type().is_symlink() {
         return Err(CowError::UnsupportedFileType {
-            path: source.to_path_buf(),
+            path: path.to_path_buf(),
         }
         .into());
     }
