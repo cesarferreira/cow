@@ -57,9 +57,19 @@ fn native_clone_rejects_special_files() {
     fs::create_dir(&source).unwrap();
     let _socket = UnixListener::bind(source.join("socket")).unwrap();
 
-    let error = clone_dir(&source, &destination, CloneOptions::require_cow()).unwrap_err();
-    assert!(matches!(error, CowError::UnsupportedFileType { .. }));
-    assert!(!destination.exists());
+    match clone_dir(&source, &destination, CloneOptions::require_cow()) {
+        Err(CowError::UnsupportedFileType { .. }) => {
+            assert!(!destination.exists());
+        }
+        Err(CowError::CowUnsupported { .. }) => {
+            // Linux probes CoW with a temporary file before walking the tree. On
+            // filesystems without reflink that probe fails first; special-file
+            // rejection is still covered by the portable copy tests.
+            assert!(!destination.exists());
+        }
+        Ok(result) => panic!("native clone succeeded with a socket: {result:?}"),
+        Err(error) => panic!("unexpected error rejecting a socket: {error}"),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -73,5 +83,36 @@ fn empty_tree_reports_reflink_only_after_a_real_probe() {
     match clone_dir(&source, &destination, CloneOptions::require_cow()) {
         Ok(result) => assert_eq!(result.strategy, CloneStrategy::Reflink),
         Err(error) => assert!(matches!(error, CowError::CowUnsupported { .. })),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_uses_reflink_when_the_workspace_filesystem_supports_it() {
+    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let root = tempfile::TempDir::new_in(&target).unwrap();
+    let source = root.path().join("source");
+    let destination = root.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("data"), "workspace-fs").unwrap();
+
+    match clone_dir(&source, &destination, CloneOptions::require_cow()) {
+        Ok(result) => {
+            assert_eq!(result.strategy, CloneStrategy::Reflink);
+            assert_eq!(
+                fs::read_to_string(destination.join("data")).unwrap(),
+                "workspace-fs"
+            );
+            fs::write(destination.join("data"), "changed").unwrap();
+            assert_eq!(
+                fs::read_to_string(source.join("data")).unwrap(),
+                "workspace-fs"
+            );
+        }
+        Err(error) => {
+            eprintln!("workspace filesystem has no reflink: {error}");
+            assert!(matches!(error, CowError::CowUnsupported { .. }));
+        }
     }
 }

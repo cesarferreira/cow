@@ -16,8 +16,6 @@
     <a href="#quickstart">Quickstart</a>
     &nbsp;·&nbsp;
     <a href="#performance">Performance</a>
-    &nbsp;·&nbsp;
-    <a href="#development">Development</a>
   </p>
 </div>
 
@@ -132,19 +130,37 @@ directory **about 34× faster than `cp -R`**, while initially allocating roughly
 | `cp -R` | 2.06 s | 205 MiB | 216 MiB | Complete | Independent `.git/` |
 | `git worktree add --detach` | **50 ms** | 32 MiB | 35.8 MiB | Tracked checkout only | Linked to source repository |
 
+On Linux, CoW is per-file (`FICLONE`) rather than a whole-tree clone. On the
+same fixture on XFS it still avoided a full physical copy (**about 2.7 MiB**
+new allocation versus **222 MiB** for `cp -a --reflink=never`), but it was not
+faster than `cp`: thousands of small files make metadata syscalls dominate.
+GitHub-hosted Ubuntu runners typically use ext4 without reflink, so `cow`
+falls back to a regular copy there unless you pass `--require-cow`.
+
+| Method | Median creation time | Apparent output size | Approx. new XFS allocation | Current filesystem state | Git metadata |
+|---|---:|---:|---:|---|---|
+| `cow clone --require-cow` | 520 ms | 200 MiB | **2.7 MiB** | Complete | Independent `.git/` |
+| `cp -R` (GNU 9.4, also reflinked) | 429 ms | 200 MiB | **2.7 MiB** | Complete | Independent `.git/` |
+| `cp -a --reflink=never` | 378 ms | 200 MiB | 222 MiB | Complete | Independent `.git/` |
+| `git worktree add --detach` | **37 ms** | 32 MiB | 32.0 MiB | Tracked checkout only | Linked to source repository |
+
 A Git worktree is quick, but it is not a directory copy: it omits untracked and
 ignored files such as `node_modules/`, `target/`, `.gradle/`, build outputs, and
 local configuration, and its Git metadata remains linked to the source
 repository. `cow` instead starts from the current filesystem state, including
-an independent Git repository.
+an independent Git repository. Sockets, devices, and FIFOs (including Git's
+`fsmonitor` socket under `.git/`) currently abort the clone.
 
 <details>
 <summary><strong>Benchmark methodology</strong></summary>
 
-Measured locally on macOS 26.6.2, Apple Silicon (`arm64`), APFS, Git 2.55.0,
-and Rust 1.98.1. The release binary was built with `cargo build --release`.
+APFS numbers were measured on macOS 26.6.2, Apple Silicon (`arm64`), APFS,
+Git 2.55.0, and Rust 1.98.1. Linux numbers were measured on Ubuntu 24.04.4,
+`x86_64`, Linux 6.17, XFS, Git 2.55.0, GNU coreutils 9.4, and Rust 1.98.1.
+The release binary was built with `cargo build --release`.
 
-The disposable source contained 5,035 files with a 205 MiB apparent size:
+The disposable source contained about 5,035 files with a ~200–205 MiB
+apparent size:
 
 - 32 MiB of tracked random data and a tracked Rust source file;
 - 128 MiB of ignored build output;
@@ -152,21 +168,24 @@ The disposable source contained 5,035 files with a 205 MiB apparent size:
 - 5,000 ignored dependency-like files; and
 - a normal `.git/` directory.
 
-Each method ran five times on the same APFS volume with filesystem caches left
+Each method ran five times on the same volume with filesystem caches left
 warm. The table reports medians. Commands:
 
 ```bash
 target/release/cow clone SOURCE DESTINATION --require-cow
 cp -R SOURCE DESTINATION
+cp -a --reflink=never SOURCE DESTINATION   # Linux physical-copy comparison
 git -C SOURCE worktree add --detach DESTINATION HEAD
 ```
 
-Apparent size came from `du -skA`. Incremental allocation is the median change
-in filesystem-used blocks from `df -kP` immediately before and after creation.
-That allocation figure is approximate and can include unrelated filesystem
-activity; it is included to show the initial order of magnitude, not as a
-universal storage guarantee. Times and allocation will vary with hardware,
-filesystem, source shape, and cache state.
+Apparent size came from `du -skA` on macOS and `du --apparent-size -sk` on
+Linux. Incremental allocation is the median change in filesystem-used blocks
+from `df -kP` immediately before and after creation. That allocation figure is
+approximate and can include unrelated filesystem activity; it is included to
+show the initial order of magnitude, not as a universal storage guarantee. Times
+and allocation will vary with hardware, filesystem, source shape, and cache
+state. GNU `cp -R` may itself reflink on XFS and Btrfs; use
+`cp --reflink=never` when you need a physical copy.
 
 </details>
 
@@ -176,36 +195,6 @@ CoW clones initially share storage blocks. Changes to either directory allocate
 new blocks only where they diverge; over time, a heavily modified clone can use
 as much physical space as a regular copy. Deleting either directory with normal
 filesystem tools does not affect the other.
-
-<a id="development"></a>
-## Development
-
-Common tasks via the `Makefile`:
-
-```bash
-make              # check + build + test
-make build        # debug build
-make build-release
-make install      # install debug binary
-make install-release
-make run ARGS="info ."
-make check        # cargo check + clippy
-make fmt          # format
-make lint         # fmt check + clippy
-make test
-make clean
-make demo         # install + show --help
-```
-
-Releasing (requires [cargo-release](https://github.com/crate-ci/cargo-release) and [git-cliff](https://github.com/orhun/git-cliff)):
-
-```bash
-make release                  # default minor bump
-make release LEVEL=patch      # patch bump
-make release LEVEL=major      # major bump
-```
-
-The pre-release hook regenerates `CHANGELOG.md` with `git-cliff` from your conventional-commit history (grouped into Features, Bug Fixes, etc. per `cliff.toml`) and commits it alongside the version bump. Pushing the resulting `v*` tag triggers the release workflow, which builds the multi-platform binaries and publishes a GitHub Release whose notes are generated by `git-cliff` from the same config.
 
 ## License
 

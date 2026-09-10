@@ -89,7 +89,14 @@ pub(crate) fn copy_tree(
     source_display: &Path,
     destination: &Path,
 ) -> Result<TreeStats, CowError> {
-    clone_tree(source, source_display, destination, &mut copy_file).map_err(|error| match error {
+    let mut buffer = vec![0_u8; 128 * 1024];
+    clone_tree(
+        source,
+        source_display,
+        destination,
+        &mut |path, input, destination| copy_file(path, input, destination, &mut buffer),
+    )
+    .map_err(|error| match error {
         BackendError::Fatal(error) => error,
         BackendError::Unsupported(_) => CowError::Unavailable("regular copy reported unsupported"),
     })
@@ -248,20 +255,30 @@ where
     Ok(())
 }
 
-fn copy_file(source: &Path, input: &File, destination: &Path) -> Result<(), BackendError> {
-    let mut input = input;
+fn copy_file(
+    source: &Path,
+    input: &File,
+    destination: &Path,
+    buffer: &mut [u8],
+) -> Result<(), BackendError> {
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
         .map_err(|error| io_error("creating destination file", destination, error))?;
-    let mut buffer = vec![0_u8; 128 * 1024];
+    #[cfg(target_os = "linux")]
+    {
+        if copy_file_range_all(source, input, destination, &output)? {
+            return Ok(());
+        }
+    }
+    let mut input = input;
     loop {
         if crate::cancellation::requested() {
             return Err(CowError::Cancelled.into());
         }
         let read = input
-            .read(&mut buffer)
+            .read(buffer)
             .map_err(|error| io_error("reading source file", source, error))?;
         if read == 0 {
             break;
@@ -271,6 +288,72 @@ fn copy_file(source: &Path, input: &File, destination: &Path) -> Result<(), Back
             .map_err(|error| io_error("writing destination file", destination, error))?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_file_range_all(
+    source: &Path,
+    input: &File,
+    destination: &Path,
+    output: &File,
+) -> Result<bool, BackendError> {
+    let mut remaining = input
+        .metadata()
+        .map_err(|error| io_error("reading source file size", source, error))?
+        .len();
+    if remaining == 0 {
+        return Ok(true);
+    }
+    let mut off_in: libc::loff_t = 0;
+    let mut off_out: libc::loff_t = 0;
+    let mut copied_any = false;
+    while remaining > 0 {
+        if crate::cancellation::requested() {
+            return Err(CowError::Cancelled.into());
+        }
+        let request = usize::try_from(remaining.min(1 << 30)).unwrap_or(usize::MAX);
+        // SAFETY: Both descriptors are open for the duration of the call and the
+        // offset pointers reference aligned local integers.
+        let copied = unsafe {
+            libc::copy_file_range(
+                input.as_raw_fd(),
+                &mut off_in,
+                output.as_raw_fd(),
+                &mut off_out,
+                request,
+                0,
+            )
+        };
+        if copied < 0 {
+            let error = io::Error::last_os_error();
+            if !copied_any
+                && matches!(
+                    error.raw_os_error(),
+                    Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL)
+                )
+            {
+                return Ok(false);
+            }
+            return Err(io_error(
+                "copying file with copy_file_range",
+                destination,
+                error,
+            ));
+        }
+        if copied == 0 {
+            if copied_any {
+                return Err(io_error(
+                    "copying file with copy_file_range",
+                    destination,
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "short copy_file_range"),
+                ));
+            }
+            return Ok(false);
+        }
+        copied_any = true;
+        remaining -= copied as u64;
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -488,7 +571,7 @@ fn changed_entry(path: &Path) -> BackendError {
 }
 
 fn restore_metadata(path: &Path, metadata: &EntryMetadata) -> Result<(), BackendError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode))
+    fs::set_permissions(path, fs::Permissions::from_mode(metadata.mode & 0o7777))
         .map_err(|error| io_error("restoring permissions", path, error))?;
     set_file_times(path, metadata.accessed, metadata.modified)
         .map_err(|error| io_error("restoring timestamps", path, error))?;
